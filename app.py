@@ -14,27 +14,32 @@ st.set_page_config(page_title="Dyslexia AI Analyzer", layout="wide")
 def load_tflite_model():
     model_path = "Improved_Hybrid_AgeModel.tflite"
     if not os.path.exists(model_path):
-        st.error("Model file not found!")
         return None
-    interpreter = tf.lite.Interpreter(model_path=model_path)
-    interpreter.allocate_tensors()
-    return interpreter
+    try:
+        interpreter = tf.lite.Interpreter(model_path=model_path)
+        interpreter.allocate_tensors()
+        return interpreter
+    except:
+        return None
 
 interpreter = load_tflite_model()
 
-def predict(img_array, age, interpreter):
-    # Preprocess Image
+def run_inference(img_array, age):
+    if interpreter is None:
+        return None
+    
+    # 1. Image Preprocessing
     img_resized = cv2.resize(img_array, (160, 160))
     img_norm = (img_resized / 255.0).astype(np.float32)
     img_input = np.expand_dims(img_norm, axis=0)
     
-    # Preprocess Age
+    # 2. Age Preprocessing
     age_input = np.array([[age]], dtype=np.float32)
 
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
 
-    # Map Inputs
+    # 3. Dynamic Tensor Assignment
     for detail in input_details:
         if len(detail['shape']) == 4:
             interpreter.set_tensor(detail['index'], img_input)
@@ -46,44 +51,41 @@ def predict(img_array, age, interpreter):
 
 # --- UI ---
 st.title("🧠 Dyslexia Handwriting Pattern Analyzer")
-analysis_mode = st.sidebar.selectbox("Choose Input Mode", ["Upload Photo", "Upload Video"])
-age = st.sidebar.slider("Student Age", 5, 15, 8)
+st.info("Upload a photo or video of handwriting to analyze the pattern.")
 
-if analysis_mode == "Upload Photo":
-    uploaded_file = st.file_uploader("Upload handwriting image...", type=["jpg", "png", "jpeg"])
-    if uploaded_file:
-        image = Image.open(uploaded_file)
-        img_array = np.array(image.convert("RGB"))
-        st.image(image, caption="Uploaded Image", width=400)
-        
-        if st.button("Analyze Image"):
-            with st.spinner("Analyzing..."):
-                prob = predict(img_array, age, interpreter)
-                st.subheader(f"Risk Score: {round(float(prob)*100, 1)}%")
-                if prob > 0.5:
-                    st.error("Result: High Indicator of Dyslexic Patterns")
-                else:
-                    st.success("Result: Patterns appear Normal")
+with st.sidebar:
+    mode = st.radio("Input Method", ["Image Upload", "Video Upload"])
+    age = st.slider("Child's Age", 5, 15, 8)
+    st.divider()
+    st.write("Model: Hybrid CNN-BiLSTM TFLite")
 
-elif analysis_mode == "Upload Video":
-    uploaded_video = st.file_uploader("Upload a video of writing...", type=["mp4", "mov", "avi"])
-    if uploaded_video:
-        tfile = tempfile.NamedTemporaryFile(delete=False) 
-        tfile.write(uploaded_video.read())
-        
-        cap = cv2.VideoCapture(tfile.name)
-        st.video(uploaded_video)
-        
-        if st.button("Analyze Video Pattern"):
-            # Get the middle frame of the video for analysis
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames // 2)
-            ret, frame = cap.read()
+if interpreter is None:
+    st.error("Model Error: The system could not allocate memory for the AI model. Please check the 'runtime.txt' is set to python-3.11.")
+else:
+    if mode == "Image Upload":
+        file = st.file_uploader("Upload Image", type=['jpg', 'png', 'jpeg'])
+        if file:
+            img = Image.open(file)
+            st.image(img, width=400)
+            if st.button("Analyze Pattern"):
+                prob = run_inference(np.array(img.convert("RGB")), age)
+                if prob is not None:
+                    res = "Dyslexic Pattern Detected" if prob > 0.5 else "Normal Pattern"
+                    st.metric("Probability", f"{round(float(prob)*100, 1)}%", delta=res)
+
+    else:
+        file = st.file_uploader("Upload Video", type=['mp4', 'mov', 'avi'])
+        if file:
+            tfile = tempfile.NamedTemporaryFile(delete=False)
+            tfile.write(file.read())
+            st.video(file)
             
-            if ret:
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                prob = predict(frame_rgb, age, interpreter)
-                st.write(f"Analysis complete on sample frame...")
-                st.progress(float(prob))
-                st.write(f"Probability: {round(float(prob), 4)}")
-            cap.release()
+            if st.button("Extract & Analyze"):
+                cap = cv2.VideoCapture(tfile.name)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) / 2))
+                ret, frame = cap.read()
+                if ret:
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    prob = run_inference(frame_rgb, age)
+                    st.success(f"Video Analysis Complete. Confidence: {round(float(prob), 3)}")
+                cap.release()
