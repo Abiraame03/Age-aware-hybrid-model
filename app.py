@@ -2,96 +2,88 @@ import streamlit as st
 import numpy as np
 import cv2
 import tensorflow as tf
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoProcessorBase
+from PIL import Image
+import tempfile
 import os
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Dyslexia AI - TFLite", layout="wide")
+st.set_page_config(page_title="Dyslexia AI Analyzer", layout="wide")
 
 # --- MODEL LOADING ---
 @st.cache_resource
 def load_tflite_model():
     model_path = "Improved_Hybrid_AgeModel.tflite"
     if not os.path.exists(model_path):
-        st.error(f"Error: {model_path} not found in the repository!")
+        st.error("Model file not found!")
         return None
-    
-    # Load the TFLite model and allocate tensors.
     interpreter = tf.lite.Interpreter(model_path=model_path)
     interpreter.allocate_tensors()
     return interpreter
 
 interpreter = load_tflite_model()
 
-# --- VIDEO PROCESSING LOGIC ---
-class DyslexiaAnalyzer(VideoProcessorBase):
-    def __init__(self):
-        self.age = 8  # Default age value
-        if interpreter:
-            self.input_details = interpreter.get_input_details()
-            self.output_details = interpreter.get_output_details()
+def predict(img_array, age, interpreter):
+    # Preprocess Image
+    img_resized = cv2.resize(img_array, (160, 160))
+    img_norm = (img_resized / 255.0).astype(np.float32)
+    img_input = np.expand_dims(img_norm, axis=0)
+    
+    # Preprocess Age
+    age_input = np.array([[age]], dtype=np.float32)
 
-    def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+
+    # Map Inputs
+    for detail in input_details:
+        if len(detail['shape']) == 4:
+            interpreter.set_tensor(detail['index'], img_input)
+        else:
+            interpreter.set_tensor(detail['index'], age_input)
+    
+    interpreter.invoke()
+    return interpreter.get_tensor(output_details[0]['index'])[0][0]
+
+# --- UI ---
+st.title("🧠 Dyslexia Handwriting Pattern Analyzer")
+analysis_mode = st.sidebar.selectbox("Choose Input Mode", ["Upload Photo", "Upload Video"])
+age = st.sidebar.slider("Student Age", 5, 15, 8)
+
+if analysis_mode == "Upload Photo":
+    uploaded_file = st.file_uploader("Upload handwriting image...", type=["jpg", "png", "jpeg"])
+    if uploaded_file:
+        image = Image.open(uploaded_file)
+        img_array = np.array(image.convert("RGB"))
+        st.image(image, caption="Uploaded Image", width=400)
         
-        # 1. Image Preprocessing (160x160)
-        img_resized = cv2.resize(img, (160, 160))
-        img_norm = (img_resized / 255.0).astype(np.float32)
-        img_input = np.expand_dims(img_norm, axis=0) # Shape: (1, 160, 160, 3)
+        if st.button("Analyze Image"):
+            with st.spinner("Analyzing..."):
+                prob = predict(img_array, age, interpreter)
+                st.subheader(f"Risk Score: {round(float(prob)*100, 1)}%")
+                if prob > 0.5:
+                    st.error("Result: High Indicator of Dyslexic Patterns")
+                else:
+                    st.success("Result: Patterns appear Normal")
+
+elif analysis_mode == "Upload Video":
+    uploaded_video = st.file_uploader("Upload a video of writing...", type=["mp4", "mov", "avi"])
+    if uploaded_video:
+        tfile = tempfile.NamedTemporaryFile(delete=False) 
+        tfile.write(uploaded_video.read())
         
-        # 2. Age Input Preprocessing
-        age_input = np.array([[self.age]], dtype=np.float32)
-
-        if interpreter:
-            try:
-                # 3. Dynamic Input Mapping
-                # Identify which input index is for Image and which is for Age
-                for detail in self.input_details:
-                    if len(detail['shape']) == 4: # Typically the Image input
-                        interpreter.set_tensor(detail['index'], img_input)
-                    else: # Typically the Age input (scalar/1D)
-                        interpreter.set_tensor(detail['index'], age_input)
-                
-                # 4. Run Inference
-                interpreter.invoke()
-                prob = interpreter.get_tensor(self.output_details[0]['index'])[0][0]
-
-                # 5. Logic & Visualization
-                if prob < 0.25: res, sev, color = "Normal", "No Risk", (0, 255, 0)
-                elif prob < 0.50: res, sev, color = "Normal", "Low Risk", (0, 255, 255)
-                elif prob < 0.75: res, sev, color = "Dyslexic", "Moderate", (0, 165, 255)
-                else: res, sev, color = "Dyslexic", "High Risk", (0, 0, 255)
-
-                # 6. UI Overlays
-                cv2.putText(img, f"{res}: {sev}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-                cv2.putText(img, f"Probability: {round(float(prob), 3)}", (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                cv2.rectangle(img, (10, 10), (img.shape[1]-10, img.shape[0]-10), color, 4)
-            except Exception as e:
-                pass
-
-        return frame.from_ndarray(img, format="bgr24")
-
-# --- USER INTERFACE ---
-st.title("🧠 Live Handwriting Pattern Analyzer")
-st.markdown("This system analyzes handwriting stroke patterns in real-time to detect dyslexic indicators.")
-
-# Sidebar age selection
-age_val = st.sidebar.slider("Student's Age", 5, 15, 8)
-st.sidebar.info("Position the camera directly over the paper for best results.")
-
-if interpreter:
-    # Initialize the video streamer
-    ctx = webrtc_streamer(
-        key="dyslexia-scan",
-        mode=WebRtcMode.SENDRECV,
-        video_processor_factory=DyslexiaAnalyzer,
-        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-        media_stream_constraints={"video": True, "audio": False},
-        async_processing=True
-    )
-
-    # Update the age parameter in the background processor
-    if ctx.video_processor:
-        ctx.video_processor.age = age_val
-else:
-    st.error("AI Model failed to load. Please check your GitHub file list.")
+        cap = cv2.VideoCapture(tfile.name)
+        st.video(uploaded_video)
+        
+        if st.button("Analyze Video Pattern"):
+            # Get the middle frame of the video for analysis
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames // 2)
+            ret, frame = cap.read()
+            
+            if ret:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                prob = predict(frame_rgb, age, interpreter)
+                st.write(f"Analysis complete on sample frame...")
+                st.progress(float(prob))
+                st.write(f"Probability: {round(float(prob), 4)}")
+            cap.release()
