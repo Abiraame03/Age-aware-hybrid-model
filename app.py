@@ -4,94 +4,84 @@ import cv2
 import tensorflow as tf
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 import os
-import gdown
 
-# --- CONFIGURATION ---
-IMG_H, IMG_W = 160, 160
-# This is extracted from your provided link
-DRIVE_FILE_ID = '12aPOVWZZzG3KzdjGxcS7I5KkTFc_fh4q'
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="Dyslexia Detection and severity prediction", layout="centered")
 
-# --- MODEL LOADING LOGIC ---
+# --- LOAD TFLITE MODEL ---
 @st.cache_resource
-def load_dyslexia_model():
-    model_path = "Improved_Hybrid_AgeModel.keras"
+def load_tflite_model():
+    model_path = "Improved_Hybrid_AgeModel.tflite"
     if not os.path.exists(model_path):
-        url = f'https://drive.google.com/uc?id={DRIVE_FILE_ID}'
-        try:
-            with st.spinner("Downloading AI Model from Google Drive..."):
-                gdown.download(url, model_path, quiet=False)
-        except Exception as e:
-            st.error(f"Download failed: {e}")
-            return None
+        st.error(f"'{model_path}' not found in GitHub repository!")
+        return None
     
-    # Load without compiling to avoid optimizer version conflicts
-    return tf.keras.models.load_model(model_path, compile=False)
+    interpreter = tf.lite.Interpreter(model_path=model_path)
+    interpreter.allocate_tensors()
+    return interpreter
 
-model = load_dyslexia_model()
+interpreter = load_tflite_model()
 
-# --- LIVE VIDEO ANALYZER ---
-class HandwritingAnalyzer(VideoTransformerBase):
+# --- PREDICTION LOGIC ---
+class DyslexiaAnalyzer(VideoTransformerBase):
     def __init__(self, age):
         self.age = age
+        if interpreter:
+            self.input_details = interpreter.get_input_details()
+            self.output_details = interpreter.get_output_details()
 
     def transform(self, frame):
         img = frame.to_ndarray(format="bgr24")
         
-        # 1. Image Preprocessing (Matches your training)
-        img_resized = cv2.resize(img, (IMG_W, IMG_H))
-        img_norm = img_resized / 255.0
+        # 1. Preprocess Image
+        # Resize to match your training (160x160)
+        img_resized = cv2.resize(img, (160, 160))
+        img_norm = (img_resized / 255.0).astype(np.float32)
+        img_input = np.expand_dims(img_norm, axis=0) # Shape (1, 160, 160, 3)
         
-        # 2. Reshape for MobileNetV2 + BiLSTM
-        # Input shape: (Batch_size, H, W, C)
-        img_input = np.expand_dims(img_norm, axis=0).astype(np.float32)
+        # 2. Preprocess Age
         age_input = np.array([[self.age]], dtype=np.float32)
 
-        if model:
+        if interpreter:
             try:
-                # 3. Prediction
-                prob = model.predict([img_input, age_input], verbose=0)[0][0]
+                # TFLite needs inputs set by index
+                # Usually, index 0 is Image and index 1 is Age (or vice versa)
+                # We identify them by shape to be safe
+                for detail in self.input_details:
+                    if len(detail['shape']) == 4: # Image input (1, 160, 160, 3)
+                        interpreter.set_tensor(detail['index'], img_input)
+                    else: # Age input (1, 1)
+                        interpreter.set_tensor(detail['index'], age_input)
                 
-                # 4. Severity & Logic
-                if prob < 0.25: 
-                    res, sev, color = "Normal", "No Risk", (0, 255, 0) # Green
-                elif prob < 0.50: 
-                    res, sev, color = "Normal", "Low Risk", (255, 165, 0) # Orange
-                elif prob < 0.75: 
-                    res, sev, color = "Dyslexic", "Moderate Risk", (0, 165, 255) # Light Blue
-                else: 
-                    res, sev, color = "Dyslexic", "High Risk", (0, 0, 255) # Red
+                interpreter.invoke()
+                
+                # Get Result
+                prob = interpreter.get_tensor(self.output_details[0]['index'])[0][0]
 
-                # 5. Visual Overlays
-                label = f"{res}: {sev}"
-                cv2.putText(img, label, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
-                cv2.putText(img, f"Conf: {round(float(prob), 3)}", (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                cv2.rectangle(img, (10, 10), (img.shape[1]-10, img.shape[0]-10), color, 4)
-                
+                # 3. Visualization Logic
+                if prob < 0.25: res, sev, color = "Normal", "No Risk", (0, 255, 0)
+                elif prob < 0.50: res, sev, color = "Normal", "Low Risk", (255, 165, 0)
+                elif prob < 0.75: res, sev, color = "Dyslexic", "Moderate", (0, 165, 255)
+                else: res, sev, color = "Dyslexic", "High Risk", (0, 0, 255)
+
+                # Draw to screen
+                cv2.putText(img, f"{res}: {sev}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+                cv2.rectangle(img, (5, 5), (img.shape[1]-5, img.shape[0]-5), color, 4)
             except Exception as e:
-                # Silently fail for individual frames to keep video smooth
                 pass
-            
+
         return img
 
-# --- STREAMLIT USER INTERFACE ---
-st.set_page_config(page_title="Dyslexia AI Screener", layout="centered")
-st.title("📝 Handwriting Pattern Analysis")
-st.write("Live analysis for dyslexia detection considering handwriting & child's age.")
+# --- UI ---
+st.title("🧠 Live Dyslexia Handwriting Analysis")
+st.write("Using optimized TFLite for real-time edge detection.")
 
-with st.sidebar:
-    st.header("Analysis Settings")
-    age_val = st.slider("Select Child's Age:", 5, 15, 8)
-    st.divider()
-    st.info("Ensure the paper is well-lit and the camera is steady.")
+age = st.sidebar.slider("Student Age", 5, 15, 8)
 
-if model:
+if interpreter:
     webrtc_streamer(
-        key="dyslexia-video-stream",
-        video_transformer_factory=lambda: HandwritingAnalyzer(age_val),
-        rtc_configuration={
-            "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-        },
-        media_stream_constraints={"video": True, "audio": False},
+        key="dyslexia-tflite",
+        video_transformer_factory=lambda: DyslexiaAnalyzer(age),
+        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+        media_stream_constraints={"video": True, "audio": False}
     )
-else:
-    st.error("Model could not be initialized. Please check the logs.")
