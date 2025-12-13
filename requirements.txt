@@ -1,5 +1,5 @@
-tensorflow-cpu
-streamlit-webrtc
+tensorflow-cpu==2.15.0
+streamlit
 opencv-python-headless
-numpy
-pillow
+numpy==1.26.4
+Pillow
