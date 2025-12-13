@@ -14,34 +14,34 @@ st.set_page_config(page_title="Dyslexia Risk Analyzer", layout="centered")
 def load_tflite_model():
     model_path = "Improved_Hybrid_AgeModel.tflite"
     if not os.path.exists(model_path):
+        st.error(f"File {model_path} not found in repository.")
         return None
     try:
-        # Load interpreter with Flex delegate support for BiLSTM
+        # Initializing the interpreter
         interpreter = tf.lite.Interpreter(model_path=model_path)
         interpreter.allocate_tensors()
         return interpreter
     except Exception as e:
-        st.sidebar.error(f"Allocation Error: {e}")
+        st.sidebar.error(f"Model Error: {e}")
         return None
 
 interpreter = load_tflite_model()
 
 def run_inference(img_array, age_val):
-    if interpreter is None:
-        return None
+    if interpreter is None: return None
     
-    # 1. Preprocess Image (160x160)
+    # Preprocess Image
     img_resized = cv2.resize(img_array, (160, 160))
     img_norm = (img_resized / 255.0).astype(np.float32)
     img_input = np.expand_dims(img_norm, axis=0)
     
-    # 2. Preprocess Age
+    # Preprocess Age
     age_input = np.array([[age_val]], dtype=np.float32)
 
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
 
-    # 3. Assign Tensors
+    # Assign Tensors
     for detail in input_details:
         if len(detail['shape']) == 4:
             interpreter.set_tensor(detail['index'], img_input)
@@ -51,61 +51,60 @@ def run_inference(img_array, age_val):
     interpreter.invoke()
     return interpreter.get_tensor(output_details[0]['index'])[0][0]
 
-def get_severity(prob):
-    """Maps probability to severity levels."""
+def get_severity_info(prob):
     if prob < 0.25:
-        return "Normal", "No Risk", "green"
+        return "Normal Pattern", "No Risk", "green", "Handwriting shows standard developmental patterns."
     elif prob < 0.50:
-        return "Normal", "Low Risk", "blue"
+        return "Normal Pattern", "Low Risk", "blue", "Minor variations noted; likely within normal range."
     elif prob < 0.75:
-        return "Dyslexic", "Moderate Risk", "orange"
+        return "Indicator Found", "Moderate Risk", "orange", "Patterns suggest some dyslexic indicators. Further screening recommended."
     else:
-        return "Dyslexic", "High Risk", "red"
+        return "Strong Indicator", "High Risk", "red", "Strong dyslexic patterns detected. Professional evaluation advised."
 
 # --- UI ---
-st.title("🧠 Dyslexia Handwriting Analysis")
-st.markdown("### Risk Assessment & Severity Level")
+st.title("🧠 Dyslexia Handwriting Pattern Analyzer")
+st.info("Upload a photo or video to assess handwriting risk levels based on age.")
 
-if interpreter is None:
-    st.error("Model Error: Failed to allocate memory. Ensure the model was converted with 'SELECT_TF_OPS' in Colab.")
-else:
-    with st.sidebar:
-        st.header("Settings")
-        mode = st.radio("Input Type", ["Photo", "Video"])
-        age = st.slider("Student Age", 5, 15, 8)
+with st.sidebar:
+    st.header("Settings")
+    mode = st.radio("Input Mode", ["Photo Upload", "Video Upload"])
+    age = st.slider("Student Age", 5, 15, 8)
+    st.divider()
+    st.caption("Hybrid CNN-BiLSTM TFLite Engine")
 
-    if mode == "Photo":
-        file = st.file_uploader("Upload handwriting photo", type=['jpg', 'png', 'jpeg'])
+if interpreter:
+    if mode == "Photo Upload":
+        file = st.file_uploader("Upload Image", type=['jpg', 'png', 'jpeg'])
         if file:
             img = Image.open(file)
             st.image(img, use_column_width=True)
-            
-            if st.button("Analyze Photo"):
+            if st.button("Run Full Analysis"):
                 prob = run_inference(np.array(img.convert("RGB")), age)
                 if prob is not None:
-                    res, sev, color = get_severity(prob)
+                    res, sev, color, desc = get_severity_info(prob)
                     st.divider()
-                    st.subheader(f"Condition: :{color}[{res}]")
+                    st.markdown(f"### Status: :{color}[{res}]")
                     st.markdown(f"**Severity Level:** {sev}")
+                    st.write(desc)
                     st.progress(float(prob))
                     st.write(f"Confidence Score: {round(float(prob)*100, 2)}%")
 
     else:
-        file = st.file_uploader("Upload writing video", type=['mp4', 'mov', 'avi'])
+        file = st.file_uploader("Upload Video", type=['mp4', 'mov', 'avi'])
         if file:
             tfile = tempfile.NamedTemporaryFile(delete=False)
             tfile.write(file.read())
             st.video(file)
-            
-            if st.button("Analyze Video"):
+            if st.button("Process Video Pattern"):
                 cap = cv2.VideoCapture(tfile.name)
+                # Analyze middle frame for better stability
                 cap.set(cv2.CAP_PROP_POS_FRAMES, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) / 2))
                 ret, frame = cap.read()
                 if ret:
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     prob = run_inference(frame_rgb, age)
-                    res, sev, color = get_severity(prob)
-                    st.success(f"Analysis Complete: {res} ({sev})")
-                    st.write(f"Probability: {round(float(prob), 4)}")
+                    res, sev, color, desc = get_severity_info(prob)
+                    st.success(f"Analysis Complete: {res} - {sev}")
+                    st.info(desc)
                 cap.release()
                 os.unlink(tfile.name)
