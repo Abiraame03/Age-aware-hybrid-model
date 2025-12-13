@@ -1,19 +1,16 @@
-
-
 import streamlit as st
 import numpy as np
 import cv2
 import tensorflow as tf
-from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoProcessorBase
 import os
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Dyslexia Detection and severity prediction", layout="centered")
+st.set_page_config(page_title="Dyslexia AI - TFLite", layout="centered")
 
 # --- LOAD TFLITE MODEL ---
 @st.cache_resource
 def load_tflite_model():
-    # UPDATED FILENAME HERE
     model_path = "Improved_Hybrid_AgeModel.tflite"
     if not os.path.exists(model_path):
         st.error(f"'{model_path}' not found! Please check the filename in your GitHub repo.")
@@ -26,14 +23,16 @@ def load_tflite_model():
 
 interpreter = load_tflite_model()
 
-class DyslexiaAnalyzer(VideoTransformerBase):
-    def __init__(self, age):
-        self.age = age
+# --- VIDEO PROCESSING CLASS ---
+class DyslexiaAnalyzer(VideoProcessorBase):
+    def __init__(self):
+        self.age = 8  # Default age
         if interpreter:
             self.input_details = interpreter.get_input_details()
             self.output_details = interpreter.get_output_details()
 
-    def transform(self, frame):
+    def recv(self, frame):
+        # Convert incoming WebRTC frame to OpenCV BGR format
         img = frame.to_ndarray(format="bgr24")
         
         # 1. Preprocess Image (160x160)
@@ -46,11 +45,11 @@ class DyslexiaAnalyzer(VideoTransformerBase):
 
         if interpreter:
             try:
-                # Map inputs to correct indices
+                # Map inputs to correct indices based on shape
                 for detail in self.input_details:
-                    if len(detail['shape']) == 4: # Image input
+                    if len(detail['shape']) == 4: # Image input (Batch, H, W, C)
                         interpreter.set_tensor(detail['index'], img_input)
-                    else: # Age input
+                    else: # Age input (Batch, 1)
                         interpreter.set_tensor(detail['index'], age_input)
                 
                 interpreter.invoke()
@@ -58,27 +57,39 @@ class DyslexiaAnalyzer(VideoTransformerBase):
 
                 # 3. Severity Logic
                 if prob < 0.25: res, sev, color = "Normal", "No Risk", (0, 255, 0)
-                elif prob < 0.50: res, sev, color = "Normal", "Low Risk", (255, 165, 0)
+                elif prob < 0.50: res, sev, color = "Normal", "Low Risk", (0, 255, 255)
                 elif prob < 0.75: res, sev, color = "Dyslexic", "Moderate", (0, 165, 255)
                 else: res, sev, color = "Dyslexic", "High Risk", (0, 0, 255)
 
-                # Overlay
-                cv2.putText(img, f"{res}: {sev}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+                # 4. Draw Overlay on Frame
+                cv2.putText(img, f"{res}: {sev}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+                cv2.putText(img, f"Conf: {round(float(prob), 3)}", (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
                 cv2.rectangle(img, (10, 10), (img.shape[1]-10, img.shape[0]-10), color, 4)
-            except:
+            except Exception as e:
                 pass
 
-        return img
+        # Return processed frame back to the browser
+        return frame.from_ndarray(img, format="bgr24")
 
 # --- UI ---
 st.title("🧠 Dyslexia Handwriting Analysis")
-age = st.sidebar.slider("Student Age", 5, 15, 8)
+st.write("Live AI analysis using a Hybrid MobileNet-BiLSTM TFLite model.")
+
+age_val = st.sidebar.slider("Student Age", 5, 15, 8)
 
 if interpreter:
-    webrtc_streamer(
+    # Initialize Streamer
+    ctx = webrtc_streamer(
         key="dyslexia-tflite",
-        video_transformer_factory=lambda: DyslexiaAnalyzer(age),
+        mode=WebRtcMode.SENDRECV,
+        video_processor_factory=DyslexiaAnalyzer,
         rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-        media_stream_constraints={"video": True, "audio": False}
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
     )
 
+    # Pass the sidebar age value to the video processor
+    if ctx.video_processor:
+        ctx.video_processor.age = age_val
+else:
+    st.warning("Awaiting model initialization...")
