@@ -26,22 +26,22 @@ AGE_REFS = {
 def load_tflite_model():
     model_path = "Improved_Hybrid_AgeModel2.tflite"
     if not os.path.exists(model_path):
-        st.error("Model file not found!")
+        st.error(f"Error: '{model_path}' not found in the directory.")
         return None
     try:
-        # Full tensorflow import registers the Flex Delegate kernels automatically.
-        # This handles operations like FlexTensorListReserve.
+        # Full tensorflow import is required to register Flex Delegate kernels.
+        # This allows the interpreter to handle 'FlexTensorListReserve'.
         interpreter = tf.lite.Interpreter(model_path=model_path)
         interpreter.allocate_tensors()
         return interpreter
     except Exception as e:
-        st.error(f"Initialization Error: {e}")
-        st.info("Check your requirements.txt: You MUST use 'tensorflow', not 'tflite-runtime'.")
+        st.error(f"Flex Delegate Error: {e}")
+        st.info("Ensure 'tensorflow' (not tflite-runtime) is installed in requirements.txt.")
         return None
 
 interpreter = load_tflite_model()
 
-# --- 3. Processing & Logic ---
+# --- 3. Prediction & Severity Logic ---
 
 def run_prediction(img_rgba, age_val):
     """Step 1: Get raw probability from TFLite model."""
@@ -53,12 +53,13 @@ def run_prediction(img_rgba, age_val):
     img_input = (img_resized / 255.0).astype(np.float32)
     img_input = np.expand_dims(img_input, axis=0)
     
-    # Preprocess Age Input
+    # Preprocess Age Input (Scaling if necessary)
     age_input = np.array([[age_val]], dtype=np.float32)
 
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
 
+    # Dynamic Assignment
     for detail in input_details:
         if len(detail['shape']) == 4:
             interpreter.set_tensor(detail['index'], img_input)
@@ -68,8 +69,8 @@ def run_prediction(img_rgba, age_val):
     interpreter.invoke()
     return interpreter.get_tensor(output_details[0]['index'])[0][0]
 
-def get_severity(prob):
-    """Step 2: Map probability to categorical severity."""
+def get_severity_mapping(prob):
+    """Step 2: Map raw output to severity status."""
     if prob < 0.25:
         return "Normal", "No Risk", "green"
     elif prob < 0.50:
@@ -79,85 +80,83 @@ def get_severity(prob):
     else:
         return "Dyslexic", "High Risk", "red"
 
-def generate_report(status, severity, age, elapsed_time):
-    """Step 3: Integrate Age and Time for personalized feedback."""
+def generate_feedback(status, severity, age, duration):
+    """Step 3: Justify prediction with Age and Time parameters."""
     ref = AGE_REFS.get(age, AGE_REFS[12])
-    speed_status = "appropriate" if elapsed_time <= ref["time"] else "slower than expected"
+    speed_diff = duration - ref["time"]
     
-    feedback = f"### Personalized Report for Age {age}\n"
+    feedback = f"### Personalized Feedback for Age {age}\n"
     feedback += f"**Benchmark Goal:** {ref['goal']}\n\n"
     
     if status == "Normal":
-        feedback += f"The student shows healthy motor patterns. The writing speed of **{elapsed_time}s** is {speed_status} (Avg: {ref['time']}s). "
-        feedback += "The stroke connection is consistent with standard developmental progress."
+        feedback += f"Handwriting flow is consistent. The speed of **{duration}s** is appropriate (Expected: ~{ref['time']}s). "
+        feedback += "No significant dyslexic markers detected."
     else:
-        feedback += f"The analysis detected **{severity}** dyslexic indicators. "
-        feedback += f"The writing speed of **{elapsed_time}s** is {speed_status} for this age group. "
-        feedback += "The feedback suggests specific difficulty with letter-form spatial orientation and motor fluidity."
+        feedback += f"A **{severity}** was detected. At this age, a child should focus on *{ref['goal']}*. "
+        feedback += f"The time taken (**{duration}s**) is {round(speed_diff, 1)}s slower than the average benchmark. "
+        feedback += "The irregular stroke patterns combined with temporal delay suggest potential dyslexic indicators."
     
     return feedback
 
 # --- 4. User Interface ---
-st.title("🧠 Neuro-Writing Analysis Board")
-st.write("Please write the phrase: **'The quick brown fox'**")
+st.title("🧠 Digital Writing Analysis Board")
+st.write("Write the sentence with a stylus: **'The quick brown fox'**")
 
 with st.sidebar:
-    st.header("Student Parameters")
+    st.header("Student Profile")
     age = st.slider("Select Age", 5, 12, 8)
     pen_size = st.slider("Pen Thickness", 1, 10, 3)
     st.divider()
-    st.write(f"**Target for age {age}:**")
-    st.info(AGE_REFS[age]["goal"])
+    st.info(f"Target for age {age}: {AGE_REFS[age]['goal']}")
 
-col_left, col_right = st.columns([2, 1])
+col1, col2 = st.columns([2, 1])
 
-with col_left:
-    st.subheader("Writing Surface")
+with col1:
+    st.subheader("Writing Board")
     canvas_result = st_canvas(
         fill_color="rgba(255, 255, 255, 0)",
         stroke_width=pen_size,
         stroke_color="#000000",
         background_color="#FFFFFF",
         height=400,
-        width=650,
+        width=600,
         drawing_mode="freedraw",
         key="canvas",
     )
     
-    # Start timer when drawing begins
     if canvas_result.json_data and len(canvas_result.json_data["objects"]) > 0:
         if "start_time" not in st.session_state:
             st.session_state.start_time = time.time()
 
-with col_right:
-    st.subheader("Results & Feedback")
+with col2:
+    st.subheader("Diagnostic Report")
     if st.button("Submit & Analyze"):
         if canvas_result.image_data is not None and "start_time" in st.session_state:
-            duration = round(time.time() - st.session_state.start_time, 2)
+            total_time = round(time.time() - st.session_state.start_time, 2)
             
             # Step 1: Prediction
             prob = run_prediction(canvas_result.image_data, age)
             
             if prob is not None:
                 # Step 2: Severity
-                status, severity, color = get_severity(prob)
+                status, severity, color = get_severity_mapping(prob)
                 
                 st.markdown(f"### Status: :{color}[{status} - {severity}]")
                 st.metric("Risk Probability", f"{round(float(prob)*100, 1)}%")
-                st.metric("Writing Speed", f"{duration}s", delta=f"{ref['time']}s avg", delta_color="inverse")
+                st.metric("Writing Speed", f"{total_time}s", delta=f"{AGE_REFS[age]['time']}s benchmark", delta_color="inverse")
                 
                 # Step 3: Personalized Feedback
                 st.divider()
-                st.markdown(generate_report(status, severity, age, duration))
+                st.markdown(generate_feedback(status, severity, age, total_time))
                 
-                # Reset for next run
+                # Reset timer
                 del st.session_state.start_time
             else:
-                st.error("Prediction failed. Ensure model is correctly loaded.")
+                st.error("Prediction failed. Ensure the .tflite model is valid.")
         else:
-            st.warning("Please write on the board first.")
+            st.warning("Please draw on the board before submitting.")
 
-if st.button("Clear Board"):
+if st.button("Clear Canvas"):
     if "start_time" in st.session_state:
         del st.session_state.start_time
     st.rerun()
