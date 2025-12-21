@@ -76,11 +76,11 @@ def get_diagnostic_report(prob, age, duration):
     risk_score = round(float(prob) * 100, 2)
     
     # NEW USER-DEFINED THRESHOLDS
-    if risk_score <= 10:
+    if risk_score <= 30:
         status, sev, color = "Normal", "Low Risk", "green"
-    elif 10 < risk_score <= 30:
+    elif 10 < risk_score <= 40:
         status, sev, color = "Normal", "Mild Risk", "blue"
-    elif 30 < risk_score <= 50:
+    elif 30 < risk_score <= 70:
         status, sev, color = "At Risk", "Moderate Risk", "orange"
     else:
         status, sev, color = "At Risk", "Severe Risk", "red"
