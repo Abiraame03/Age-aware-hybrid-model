@@ -8,45 +8,46 @@ import os
 
 st.set_page_config(page_title="Dyslexia Risk Analyzer", layout="wide")
 
-# --- 1. Age-Based Benchmarks ---
-# Reference for normal handwriting speed and developmental milestones
+# --- 1. Age-Based Handwriting Benchmarks ---
+# Reference data for normal handwriting speeds and goals by age
 AGE_REFS = {
-    5: {"avg_time": 60, "goal": "Basic stroke orientation and shape recognition."},
-    6: {"avg_time": 52, "goal": "Consistent letter sizing and baseline alignment."},
-    7: {"avg_time": 45, "goal": "Improved word spacing and letter formation."},
-    8: {"avg_time": 38, "goal": "Fluidity and connection between letters."},
-    9: {"avg_time": 32, "goal": "Automaticity in letter production."},
-    10: {"avg_time": 28, "goal": "Legibility at increased writing speeds."},
-    11: {"avg_time": 24, "goal": "Mature motor control and efficient speed."},
-    12: {"avg_time": 20, "goal": "Adult-level handwriting automaticity."}
+    5: {"time": 60, "goal": "Basic stroke orientation and shape recognition."},
+    6: {"time": 52, "goal": "Letter sizing and basic baseline alignment."},
+    7: {"time": 45, "goal": "Word spacing and consistent letter formation."},
+    8: {"time": 38, "goal": "Fluidity and connection between letters."},
+    9: {"time": 32, "goal": "Automaticity in letter production."},
+    10: {"time": 28, "goal": "Legibility at increased writing speeds."},
+    11: {"time": 24, "goal": "Personalized style and efficient speed."},
+    12: {"time": 20, "goal": "Adult-level motor control and speed."},
 }
 
-# --- 2. TFLite Model Loading (Flex Delegate Fix) ---
+# --- 2. TFLite Model Loading (Fixing Flex Op Error) ---
 @st.cache_resource
 def load_tflite_model():
     model_path = "Improved_Hybrid_AgeModel2.tflite"
     if not os.path.exists(model_path):
-        st.error(f"Error: '{model_path}' not found.")
+        st.error("Model file not found!")
         return None
     try:
-        # Full tensorflow import automatically enables Flex delegates for TFLite
+        # Full tensorflow import registers the Flex Delegate kernels automatically.
+        # This handles operations like FlexTensorListReserve.
         interpreter = tf.lite.Interpreter(model_path=model_path)
         interpreter.allocate_tensors()
         return interpreter
     except Exception as e:
-        st.error(f"Flex Delegate Error: {e}")
-        st.info("Check requirements.txt: You MUST use 'tensorflow', not 'tflite-runtime'.")
+        st.error(f"Initialization Error: {e}")
+        st.info("Check your requirements.txt: You MUST use 'tensorflow', not 'tflite-runtime'.")
         return None
 
 interpreter = load_tflite_model()
 
-# --- 3. Processing Logic ---
+# --- 3. Processing & Logic ---
 
 def run_prediction(img_rgba, age_val):
-    """Step 1: Predict with the TFLite model."""
+    """Step 1: Get raw probability from TFLite model."""
     if interpreter is None: return None
     
-    # Preprocess Image: RGBA -> RGB -> 160x160 -> Normalize
+    # Preprocess Image: RGBA -> RGB -> 160x160 -> Float32
     img_rgb = cv2.cvtColor(img_rgba.astype(np.uint8), cv2.COLOR_RGBA2RGB)
     img_resized = cv2.resize(img_rgb, (160, 160))
     img_input = (img_resized / 255.0).astype(np.float32)
@@ -58,7 +59,6 @@ def run_prediction(img_rgba, age_val):
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
 
-    # Assign Tensors
     for detail in input_details:
         if len(detail['shape']) == 4:
             interpreter.set_tensor(detail['index'], img_input)
@@ -69,7 +69,7 @@ def run_prediction(img_rgba, age_val):
     return interpreter.get_tensor(output_details[0]['index'])[0][0]
 
 def get_severity(prob):
-    """Step 2: Assign severity based on model output."""
+    """Step 2: Map probability to categorical severity."""
     if prob < 0.25:
         return "Normal", "No Risk", "green"
     elif prob < 0.50:
@@ -79,79 +79,85 @@ def get_severity(prob):
     else:
         return "Dyslexic", "High Risk", "red"
 
-def generate_custom_feedback(status, severity, age, elapsed_time):
-    """Step 3: Proceed with Age/Time parameters for personalized feedback."""
+def generate_report(status, severity, age, elapsed_time):
+    """Step 3: Integrate Age and Time for personalized feedback."""
     ref = AGE_REFS.get(age, AGE_REFS[12])
-    speed_status = "appropriate" if elapsed_time <= ref["avg_time"] else "slower than average"
+    speed_status = "appropriate" if elapsed_time <= ref["time"] else "slower than expected"
     
-    feedback = f"### Personalized Analysis for Age {age}\n"
-    feedback += f"**Developmental Context:** At this age, the goal is: *{ref['goal']}*.\n\n"
+    feedback = f"### Personalized Report for Age {age}\n"
+    feedback += f"**Benchmark Goal:** {ref['goal']}\n\n"
     
     if status == "Normal":
-        feedback += f"The student's handwriting patterns are healthy. The completion time of **{elapsed_time}s** is {speed_status} (Benchmark: {ref['avg_time']}s)."
+        feedback += f"The student shows healthy motor patterns. The writing speed of **{elapsed_time}s** is {speed_status} (Avg: {ref['time']}s). "
+        feedback += "The stroke connection is consistent with standard developmental progress."
     else:
-        feedback += f"The analysis detected **{severity}** indicators. The writing speed was **{elapsed_time}s**, which is {speed_status}. "
-        feedback += "This combination suggests difficulty with motor-spatial coordination or letter-form recall."
+        feedback += f"The analysis detected **{severity}** dyslexic indicators. "
+        feedback += f"The writing speed of **{elapsed_time}s** is {speed_status} for this age group. "
+        feedback += "The feedback suggests specific difficulty with letter-form spatial orientation and motor fluidity."
     
     return feedback
 
 # --- 4. User Interface ---
-st.title("🧠 Neuro-Writing Diagnostic Board")
-st.markdown("Write: **'The quick brown fox'** on the board below.")
+st.title("🧠 Neuro-Writing Analysis Board")
+st.write("Please write the phrase: **'The quick brown fox'**")
 
 with st.sidebar:
-    st.header("Student Settings")
+    st.header("Student Parameters")
     age = st.slider("Select Age", 5, 12, 8)
-    brush = st.slider("Pen Thickness", 1, 10, 3)
+    pen_size = st.slider("Pen Thickness", 1, 10, 3)
     st.divider()
-    st.info(f"Target for age {age}: {AGE_REFS[age]['goal']}")
+    st.write(f"**Target for age {age}:**")
+    st.info(AGE_REFS[age]["goal"])
 
-col1, col2 = st.columns([2, 1])
+col_left, col_right = st.columns([2, 1])
 
-with col1:
-    st.subheader("Writing Canvas")
+with col_left:
+    st.subheader("Writing Surface")
     canvas_result = st_canvas(
         fill_color="rgba(255, 255, 255, 0)",
-        stroke_width=brush,
+        stroke_width=pen_size,
         stroke_color="#000000",
         background_color="#FFFFFF",
         height=400,
-        width=600,
+        width=650,
         drawing_mode="freedraw",
         key="canvas",
     )
     
-    # Start timer on first stroke
+    # Start timer when drawing begins
     if canvas_result.json_data and len(canvas_result.json_data["objects"]) > 0:
         if "start_time" not in st.session_state:
             st.session_state.start_time = time.time()
 
-with col2:
-    st.subheader("Report")
-    if st.button("Submit Analysis"):
+with col_right:
+    st.subheader("Results & Feedback")
+    if st.button("Submit & Analyze"):
         if canvas_result.image_data is not None and "start_time" in st.session_state:
-            # Step 1 & 2: Prediction and Severity
             duration = round(time.time() - st.session_state.start_time, 2)
+            
+            # Step 1: Prediction
             prob = run_prediction(canvas_result.image_data, age)
             
             if prob is not None:
+                # Step 2: Severity
                 status, severity, color = get_severity(prob)
                 
-                # Display Severity Result
                 st.markdown(f"### Status: :{color}[{status} - {severity}]")
-                st.progress(float(prob))
+                st.metric("Risk Probability", f"{round(float(prob)*100, 1)}%")
+                st.metric("Writing Speed", f"{duration}s", delta=f"{ref['time']}s avg", delta_color="inverse")
                 
-                # Step 3: Detailed Feedback with Age/Time
+                # Step 3: Personalized Feedback
                 st.divider()
-                report = generate_custom_feedback(status, severity, age, duration)
-                st.markdown(report)
+                st.markdown(generate_report(status, severity, age, duration))
                 
-                # Clear session
+                # Reset for next run
                 del st.session_state.start_time
+            else:
+                st.error("Prediction failed. Ensure model is correctly loaded.")
         else:
             st.warning("Please write on the board first.")
 
-if st.button("Reset Board"):
+if st.button("Clear Board"):
     if "start_time" in st.session_state:
         del st.session_state.start_time
     st.rerun()
