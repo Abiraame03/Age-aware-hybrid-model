@@ -101,7 +101,7 @@ def get_diagnostic_report(prob, age, duration):
     return status, sev, color, feedback, risk_score
 
 # --- 4. User Interface ---
-st.title("🧠 Neuro-Writing Diagnostic Board")
+st.title("🧠 Handwriting Analysis Board")
 
 with st.sidebar:
     st.header("Settings")
@@ -128,7 +128,7 @@ with col_left:
 
 with col_right:
     st.subheader("Diagnostic Results")
-    if st.button("Submit & Predict Risk"):
+    if st.button("Submit & Predict Dyslexic Risk"):
         if canvas_result.image_data is not None and "start" in st.session_state:
             duration = round(time.time() - st.session_state.start, 2)
             
