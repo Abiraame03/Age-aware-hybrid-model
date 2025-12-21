@@ -16,7 +16,6 @@ PRACTICE_SENTENCES = {
     "Age 11-12 (Advanced)": "The quick brown fox jumps over the lazy dog."
 }
 
-# Average completion times and developmental goals
 AGE_REFS = {
     5: {"time": 65, "goal": "Basic shape recognition and vertical/horizontal strokes."},
     6: {"time": 55, "goal": "Letter sizing and basic baseline alignment."},
@@ -36,7 +35,7 @@ def load_tflite_model():
         st.error(f"Model file '{model_path}' not found.")
         return None
     try:
-        # Link the Flex Delegate by using the full TF library
+        # Full TF library is required for Flex Delegate ops
         interpreter = tf.lite.Interpreter(model_path=model_path)
         interpreter.allocate_tensors()
         return interpreter
@@ -50,11 +49,10 @@ interpreter = load_tflite_model()
 def run_prediction(img_rgba, age_val):
     if interpreter is None: return None
     
-    # Preprocess Image: The model expects specific normalization
+    # Preprocess Image: RGBA to RGB
     img_rgb = cv2.cvtColor(img_rgba.astype(np.uint8), cv2.COLOR_RGBA2RGB)
     
-    # Invert if the model was trained on white-on-black (common in OCR)
-    # If the model predicts everyone as dyslexic, it might be seeing 'too much' ink.
+    # Resize and Normalize
     img_resized = cv2.resize(img_rgb, (160, 160))
     img_input = (img_resized / 255.0).astype(np.float32)
     img_input = np.expand_dims(img_input, axis=0)
@@ -74,41 +72,42 @@ def run_prediction(img_rgba, age_val):
     return output
 
 def get_diagnostic_report(prob, age, duration):
-    # Mapping probability to severity
-    # Note: If prob > 0.5, the model detects dyslexic traits. 
-    # Adjusting the threshold slightly can help if it is too sensitive.
-    if prob < 0.40:
+    # Convert raw probability (0-1) to Risk Score (0-100)
+    risk_score = round(float(prob) * 100, 2)
+    
+    # NEW USER-DEFINED THRESHOLDS
+    if risk_score <= 10:
         status, sev, color = "Normal", "Low Risk", "green"
-    elif prob < 0.75:
+    elif 10 < risk_score <= 30:
+        status, sev, color = "Normal", "Mild Risk", "blue"
+    elif 30 < risk_score <= 50:
         status, sev, color = "At Risk", "Moderate Risk", "orange"
     else:
-        status, sev, color = "At Risk", "High Risk", "red"
+        status, sev, color = "At Risk", "Severe Risk", "red"
     
     ref = AGE_REFS.get(age, AGE_REFS[12])
     speed_status = "Appropriate" if duration <= ref["time"] else "Delayed"
     
     feedback = f"### Diagnostic Report (Age {age})\n"
     feedback += f"**Developmental Target:** {ref['goal']}\n\n"
-    feedback += f"**Result Analysis:** The writing patterns show a **{sev}** profile. "
-    feedback += f"The completion time of **{duration}s** is considered **{speed_status}** for a {age}-year-old (Benchmark: {ref['time']}s).\n\n"
+    feedback += f"**Result Analysis:** The writing patterns indicate a **{sev}** profile with a score of **{risk_score}/100**. "
+    feedback += f"The completion time of **{duration}s** is considered **{speed_status}** (Avg: {ref['time']}s).\n\n"
     
-    if status == "At Risk":
-        feedback += "The model identified tremors, inconsistent sizing, or directional reversals typical of dyslexia."
+    if risk_score > 30:
+        feedback += "The model identified tremors, irregular letter spacing, or directional reversals often associated with dyslexia."
     else:
-        feedback += "The stroke sequence and spatial orientation align with typical milestones."
+        feedback += "Handwriting formation and spatial orientation align closely with developmental milestones."
         
-    return status, sev, color, feedback
+    return status, sev, color, feedback, risk_score
 
 # --- 4. User Interface ---
-st.title("🧠 Digital Handwriting Diagnostic Board")
-st.markdown("Assess handwriting patterns for ages 5–12.")
+st.title("🧠 Neuro-Writing Diagnostic Board")
 
 with st.sidebar:
     st.header("Settings")
-    age = st.slider("Child's Age", 5, 12, 7)
+    age = st.slider("Child's Age", 5, 12, 8)
     group = "Age 5-6 (Early)" if age <= 6 else ("Age 7-8 (Basic)" if age <= 8 else "Age 9-10 (Intermediate)" if age <= 10 else "Age 11-12 (Advanced)")
-    st.write(f"**Recommended Sentence:**")
-    st.success(PRACTICE_SENTENCES[group])
+    st.success(f"**Target Sentence:**\n{PRACTICE_SENTENCES[group]}")
     
     pen_size = st.slider("Pen Thickness", 1, 10, 3)
     st.divider()
@@ -128,27 +127,26 @@ with col_left:
             st.session_state.start = time.time()
 
 with col_right:
-    st.subheader("Real-time Analysis")
+    st.subheader("Diagnostic Results")
     if st.button("Submit & Predict Risk"):
         if canvas_result.image_data is not None and "start" in st.session_state:
             duration = round(time.time() - st.session_state.start, 2)
             
-            # Show a loading spinner
             with st.spinner("Analyzing handwriting metrics..."):
                 prob = run_prediction(canvas_result.image_data, age)
                 
             if prob is not None:
-                status, sev, color, report = get_diagnostic_report(prob, age, duration)
+                status, sev, color, report, score = get_diagnostic_report(prob, age, duration)
                 
                 st.markdown(f"## Status: :{color}[{status}]")
                 st.metric("Risk Level", sev)
+                st.metric("Risk Score", f"{score}/100")
                 st.metric("Time Taken", f"{duration}s", delta=f"{AGE_REFS[age]['time']}s avg", delta_color="inverse")
                 st.divider()
                 st.markdown(report)
                 
-                # Progress bar showing raw probability
-                st.write("Raw Dyslexic Pattern Confidence:")
-                st.progress(float(prob))
+                # Progress bar for visual score representation
+                st.progress(min(score/100, 1.0))
                 
                 del st.session_state.start
         else:
