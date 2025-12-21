@@ -97,7 +97,7 @@ def generate_personalized_feedback(status, severity, age, duration):
 
 # --- 4. User Interface ---
 st.title("✍️ Dyslexia Handwriting Board")
-st.markdown("Write the sentence using a stylus: **'The quick brown fox'**")
+st.markdown("Write the sentence using a stylus: **'witty mouse'**")
 
 with st.sidebar:
     st.header("Student Profile")
