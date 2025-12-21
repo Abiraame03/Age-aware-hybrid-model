@@ -8,8 +8,7 @@ import os
 
 st.set_page_config(page_title="Dyslexia Risk Analyzer", layout="wide")
 
-# --- Age-Wise Handwriting Benchmarks ---
-# Reference data for normal handwriting speed (seconds) and developmental goals
+# --- Developmental Reference Data ---
 AGE_REFS = {
     5: {"time": 60, "goal": "Basic stroke orientation and shape recognition."},
     6: {"time": 52, "goal": "Letter sizing and basic baseline alignment."},
@@ -21,45 +20,48 @@ AGE_REFS = {
     12: {"time": 20, "goal": "Adult-level motor control and speed."},
 }
 
+# --- Fixed Model Loading with Flex Delegate ---
 @st.cache_resource
 def load_tflite_model():
     model_path = "Improved_Hybrid_AgeModel2.tflite"
     if not os.path.exists(model_path):
-        st.error("Model file not found in directory.")
+        st.error(f"Model file '{model_path}' not found.")
         return None
     try:
-        # Standard Interpreter links Flex Ops when full 'tensorflow' is imported
-        interpreter = tf.lite.Interpreter(model_path=model_path)
+        # Load interpreter with Flex Delegate support
+        # Full TensorFlow import registers these ops automatically
+        interpreter = tf.lite.Interpreter(
+            model_path=model_path,
+            num_threads=4
+        )
         interpreter.allocate_tensors()
         return interpreter
     except Exception as e:
-        st.error(f"Flex Delegate Error: {e}")
-        st.info("Ensure the full 'tensorflow' library is in your requirements.txt.")
+        st.error(f"Initialization Error: {e}")
         return None
 
 interpreter = load_tflite_model()
 
 def get_personalized_feedback(prob, age, elapsed_time):
-    """Justifies prediction based on probability, age, and writing time."""
     ref = AGE_REFS.get(age, AGE_REFS[12])
     speed_status = "appropriate" if elapsed_time <= ref["time"] else "delayed"
     
-    if prob < 0.3:
+    if prob < 0.35:
         status, color = "No Significant Risk", "green"
-        insight = f"Excellent! At age {age}, the speed ({elapsed_time}s) is {speed_status}. Motor control aligns with: {ref['goal']}."
-    elif prob < 0.7:
+        insight = f"Excellent! For age {age}, the speed ({elapsed_time}s) is {speed_status}. Motor control matches: {ref['goal']}."
+    elif prob < 0.70:
         status, color = "Moderate Risk", "orange"
         insight = f"Moderate markers found. While {ref['goal']} is expected at age {age}, the {speed_status} speed and stroke irregularities suggest monitoring."
     else:
         status, color = "High Risk", "red"
-        insight = f"Significant dyslexic indicators found. Writing speed is {speed_status} for age {age}. Difficulty with the target ({ref['goal']}) suggests professional screening."
+        insight = f"High-risk markers detected. Speed is {speed_status} for age {age}. Difficulty with {ref['goal']} suggests professional screening."
     
     return status, color, insight
 
 def run_inference(img_rgba, age_val):
     if interpreter is None: return None
     
-    # Preprocess Image: Convert RGBA to RGB, resize, and normalize
+    # Preprocess Image: RGBA -> RGB -> 160x160 -> Float32
     img_rgb = cv2.cvtColor(img_rgba.astype(np.uint8), cv2.COLOR_RGBA2RGB)
     img_resized = cv2.resize(img_rgb, (160, 160))
     img_input = (img_resized / 255.0).astype(np.float32)
@@ -71,6 +73,7 @@ def run_inference(img_rgba, age_val):
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
 
+    # Match tensors dynamically
     for detail in input_details:
         if len(detail['shape']) == 4:
             interpreter.set_tensor(detail['index'], img_input)
@@ -80,12 +83,12 @@ def run_inference(img_rgba, age_val):
     interpreter.invoke()
     return interpreter.get_tensor(output_details[0]['index'])[0][0]
 
-# --- UI Interface ---
+# --- UI Layout ---
 st.title("🧠 Digital Handwriting Diagnostic Board")
-st.markdown("Use a stylus to write: **'The quick brown fox'**")
+st.markdown("Write the sentence below with a stylus: **'The quick brown fox'**")
 
 with st.sidebar:
-    st.header("Student Profile")
+    st.header("Student Parameters")
     age = st.slider("Select Age", 5, 12, 8)
     pen_width = st.slider("Pen Thickness", 1, 15, 4)
     st.markdown("---")
@@ -107,13 +110,12 @@ with col_left:
         key="canvas",
     )
     
-    # Track start time when drawing begins
     if canvas_result.json_data and len(canvas_result.json_data["objects"]) > 0:
         if "start_time" not in st.session_state:
             st.session_state.start_time = time.time()
 
 with col_right:
-    st.subheader("Diagnostic Report")
+    st.subheader("Analysis Results")
     if st.button("Predict Dyslexia Risk"):
         if canvas_result.image_data is not None and "start_time" in st.session_state:
             total_time = round(time.time() - st.session_state.start_time, 2)
@@ -121,12 +123,10 @@ with col_right:
             
             if prob is not None:
                 status, color, feedback = get_personalized_feedback(prob, age, total_time)
-                
                 st.markdown(f"### Status: :{color}[{status}]")
                 st.metric("Writing Time", f"{total_time}s")
                 st.metric("Risk Probability", f"{round(float(prob)*100, 1)}%")
-                st.info(f"**Personalized Justification:**\n\n{feedback}")
-                
+                st.info(f"**Customized Justification:**\n\n{feedback}")
                 del st.session_state.start_time
         else:
             st.warning("Please draw on the board first.")
