@@ -2,180 +2,136 @@ import streamlit as st
 import numpy as np
 import cv2
 import tensorflow as tf
+from PIL import Image
+from streamlit_drawable_canvas import st_canvas
 import time
 import os
-from streamlit_drawable_canvas import st_canvas
 
-# --------------------------------------------------
-# Page Config
-# --------------------------------------------------
-st.set_page_config(
-    page_title="Dyslexia Handwriting Risk Analyzer",
-    layout="centered"
-)
+st.set_page_config(page_title="Dyslexia Risk Analyzer", layout="wide")
 
-st.title("🧠 Dyslexia Handwriting Pattern Analyzer")
-st.caption("Stylus-based handwriting analysis with age & time awareness")
-
-# --------------------------------------------------
-# Load TFLite Model
-# --------------------------------------------------
+# --- Model Loading ---
 @st.cache_resource
 def load_tflite_model():
     model_path = "Improved_Hybrid_AgeModel2.tflite"
     if not os.path.exists(model_path):
         return None
-    interpreter = tf.lite.Interpreter(model_path=model_path)
-    interpreter.allocate_tensors()
-    return interpreter
+    try:
+        interpreter = tf.lite.Interpreter(model_path=model_path)
+        interpreter.allocate_tensors()
+        return interpreter
+    except Exception as e:
+        st.error(f"Model Error: {e}")
+        return None
 
 interpreter = load_tflite_model()
 
-# --------------------------------------------------
-# Severity Mapping
-# --------------------------------------------------
-def get_severity_info(prob):
+# --- Logic & Processing ---
+def get_personalized_feedback(prob, age, time_taken):
+    """Generates custom feedback based on age, speed, and probability."""
+    # Logic for expected time: younger kids take longer
+    expected_time = 30 if age < 8 else 15 
+    speed_status = "slow" if time_taken > expected_time else "steady"
+    
     if prob < 0.25:
-        return "Normal", "No Risk", "green"
+        return f"Excellent! For a {age}-year-old, the handwriting flow is {speed_status} and shows strong motor control. No dyslexic markers detected."
     elif prob < 0.50:
-        return "Normal", "Low Risk", "blue"
+        return f"Normal patterns observed. The {time_taken}s completion time is within the expected range for age {age}. Minor irregularities are likely developmental."
     elif prob < 0.75:
-        return "Dyslexic", "Moderate Risk", "orange"
+        return f"Moderate risk detected. At age {age}, the combination of a {speed_status} pace and specific stroke patterns suggests possible spatial orientation challenges. Consider a professional screening."
     else:
-        return "Dyslexic", "High Risk", "red"
+        return f"High-risk markers identified. The completion time of {time_taken}s combined with pattern analysis indicates significant difficulty with letter formation. We recommend consulting an educational specialist."
 
-# --------------------------------------------------
-# Personalized Feedback
-# --------------------------------------------------
-def personalized_feedback(prob, age, writing_time):
-    if prob < 0.25:
-        return (
-            f"✅ Handwriting is appropriate for age {age}.\n\n"
-            f"- Writing speed is within normal range ({writing_time:.1f}s)\n"
-            f"- Stroke formation is smooth and consistent\n"
-            f"- No dyslexic indicators detected"
-        )
-    elif prob < 0.50:
-        return (
-            f"⚠️ Minor handwriting variations observed.\n\n"
-            f"- Writing time slightly higher than peers ({writing_time:.1f}s)\n"
-            f"- Small inconsistencies in letter spacing\n"
-            f"- Still within acceptable age norms"
-        )
-    elif prob < 0.75:
-        return (
-            f"❗ Moderate dyslexic indicators detected.\n\n"
-            f"- Writing speed slower than expected ({writing_time:.1f}s)\n"
-            f"- Irregular stroke continuity\n"
-            f"- May benefit from guided handwriting practice"
-        )
-    else:
-        return (
-            f"🚨 High dyslexia risk detected.\n\n"
-            f"- Writing time significantly exceeds age norms ({writing_time:.1f}s)\n"
-            f"- Poor stroke consistency and motor planning\n"
-            f"- Professional evaluation is strongly recommended"
-        )
-
-# --------------------------------------------------
-# Run Inference
-# --------------------------------------------------
-def run_inference(img_array, age_val, time_val):
-    if interpreter is None:
-        return None
-
-    # Image preprocessing
+def run_inference(img_array, age_val):
+    if interpreter is None: return None
+    
+    # Preprocess Image (160x160)
     img_resized = cv2.resize(img_array, (160, 160))
-    img_norm = (img_resized / 255.0).astype(np.float32)
+    # Convert to RGB if needed and normalize
+    img_norm = (img_resized[:, :, :3] / 255.0).astype(np.float32)
     img_input = np.expand_dims(img_norm, axis=0)
-
-    # Age & time inputs
+    
+    # Preprocess Age
     age_input = np.array([[age_val]], dtype=np.float32)
-    time_input = np.array([[time_val]], dtype=np.float32)
 
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
 
-    # Dynamic input assignment
     for detail in input_details:
-        shape_len = len(detail["shape"])
-        if shape_len == 4:
-            interpreter.set_tensor(detail["index"], img_input)
-        elif shape_len == 2:
-            # Heuristic: first scalar = age, second = time
-            if "age_used" not in locals():
-                interpreter.set_tensor(detail["index"], age_input)
-                age_used = True
-            else:
-                interpreter.set_tensor(detail["index"], time_input)
-
+        if len(detail['shape']) == 4:
+            interpreter.set_tensor(detail['index'], img_input)
+        else:
+            interpreter.set_tensor(detail['index'], age_input)
+    
     interpreter.invoke()
-    output = interpreter.get_tensor(output_details[0]["index"])
-    return float(output[0][0])
+    return interpreter.get_tensor(output_details[0]['index'])[0][0]
 
-# --------------------------------------------------
-# Sidebar Controls
-# --------------------------------------------------
-st.sidebar.header("Student Details")
+# --- UI Layout ---
+st.title("🧠 Digital Writing Analysis Board")
+st.markdown("Write the sentence: **'The quick brown fox'** or draw shapes below.")
+
+# Sidebar Settings
+st.sidebar.header("Student Profile")
 age = st.sidebar.slider("Student Age", 5, 15, 8)
+stroke_width = st.sidebar.slider("Stroke width: ", 1, 10, 3)
 
-st.sidebar.markdown("---")
-st.sidebar.markdown(
-    "**Instructions**\n"
-    "- Write a letter or word on the board\n"
-    "- Use stylus / finger / mouse\n"
-    "- Click *Analyze Handwriting*"
-)
-
-# --------------------------------------------------
-# Writing Canvas
-# --------------------------------------------------
-st.subheader("✍️ Writing Board")
-
-if "start_time" not in st.session_state:
+# Timer logic
+if 'start_time' not in st.session_state:
     st.session_state.start_time = None
 
-canvas = st_canvas(
-    fill_color="rgba(255,255,255,0)",
-    stroke_width=4,
-    stroke_color="black",
-    background_color="white",
-    width=500,
-    height=250,
-    drawing_mode="freedraw",
-    key="canvas",
-)
+col1, col2 = st.columns([2, 1])
 
-# Start timing when user begins writing
-if canvas.json_data is not None and st.session_state.start_time is None:
-    st.session_state.start_time = time.time()
+with col1:
+    st.subheader("Writing Canvas")
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",  # Fixed fill color with some opacity
+        stroke_width=stroke_width,
+        stroke_color="#000000",
+        background_color="#FFFFFF",
+        height=400,
+        width=600,
+        drawing_mode="freedraw",
+        key="canvas",
+    )
+    
+    # Start timer on first stroke
+    if canvas_result.json_data and len(canvas_result.json_data["objects"]) > 0:
+        if st.session_state.start_time is None:
+            st.session_state.start_time = time.time()
 
-# --------------------------------------------------
-# Analyze Button
-# --------------------------------------------------
-if st.button("🔍 Analyze Handwriting"):
-    if canvas.image_data is None:
-        st.warning("Please write something on the board first.")
-    elif interpreter is None:
-        st.error("TFLite model not found.")
-    else:
-        end_time = time.time()
-        writing_time = end_time - st.session_state.start_time
+with col2:
+    st.subheader("Analysis")
+    if st.button("Submit & Analyze"):
+        if canvas_result.image_data is not None and st.session_state.start_time is not None:
+            # Calculate Time
+            end_time = time.time()
+            time_taken = round(end_time - st.session_state.start_time, 2)
+            
+            # Run Model
+            prob = run_inference(canvas_result.image_data, age)
+            
+            if prob is not None:
+                # Severity Logic
+                if prob < 0.5:
+                    st.success(f"Result: Normal Range")
+                else:
+                    st.error(f"Result: Dyslexic Indicators Found")
+                
+                # Metrics
+                st.metric("Completion Time", f"{time_taken} seconds")
+                st.metric("Probability", f"{round(float(prob)*100, 2)}%")
+                
+                # Feedback
+                st.info("**Personalized Feedback:**")
+                feedback = get_personalized_feedback(prob, age, time_taken)
+                st.write(feedback)
+                
+                # Reset timer for next run
+                st.session_state.start_time = None
+            else:
+                st.error("Model Error: Could not run inference.")
+        else:
+            st.warning("Please write something on the board first!")
 
-        img = canvas.image_data[:, :, :3].astype(np.uint8)
-
-        prob = run_inference(img, age, writing_time)
-
-        if prob is not None:
-            result, severity, color = get_severity_info(prob)
-
-            st.markdown(f"## Status: :{color}[{result} – {severity}]")
-            st.progress(prob)
-            st.write(f"**Risk Probability:** {prob*100:.2f}%")
-            st.write(f"**Writing Time:** {writing_time:.2f} seconds")
-
-            st.markdown("### 🧾 Personalized Feedback")
-            st.info(personalized_feedback(prob, age, writing_time))
-
-        # Reset timer for next attempt
-        st.session_state.start_time = None
+if st.button("Clear Canvas"):
+    st.session_state.start_time = None
+    st.rerun()
