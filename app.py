@@ -70,11 +70,11 @@ def run_prediction(img_rgba, age_val):
 
 def get_severity(prob):
     """Step 2: Map probability to categorical severity."""
-    if prob < 0.25:
+    if prob < 0.5:
         return "Normal", "No Risk", "green"
-    elif prob < 0.50:
+    elif prob < 0.30:
         return "Normal", "Low Risk", "blue"
-    elif prob < 0.75:
+    elif prob < 0.60:
         return "Dyslexic", "Moderate Risk", "orange"
     else:
         return "Dyslexic", "High Risk", "red"
