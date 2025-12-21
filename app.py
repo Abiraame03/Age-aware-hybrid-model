@@ -2,157 +2,158 @@ import streamlit as st
 import numpy as np
 import cv2
 import tensorflow as tf
-from PIL import Image
 from streamlit_drawable_canvas import st_canvas
 import time
 import os
 
-st.set_page_config(page_title="Dyslexia Risk Analyzer", layout="wide")
+st.set_page_config(page_title="Dyslexia Risk Screener (5-12y)", layout="wide")
 
-# --- 1. Age-Based Handwriting Benchmarks ---
-# Reference data for normal handwriting speeds and developmental goals
-AGE_REFS = {
-    5: {"time": 60, "goal": "Basic stroke orientation and shape recognition."},
-    6: {"time": 52, "goal": "Consistent letter sizing and baseline alignment."},
-    7: {"time": 45, "goal": "Word spacing and consistent letter formation."},
-    8: {"time": 38, "goal": "Fluidity and connection between letters."},
-    9: {"time": 32, "goal": "Automaticity in letter production."},
-    10: {"time": 28, "goal": "Legibility at increased writing speeds."},
-    11: {"time": 24, "goal": "Mature motor control and efficient speed."},
-    12: {"time": 20, "goal": "Adult-level motor control and speed."},
+# --- 1. Age-Appropriate Practice Sentences ---
+PRACTICE_SENTENCES = {
+    "Age 5-6 (Early)": "Cat sat on a mat.",
+    "Age 7-8 (Basic)": "The big red dog ran fast.",
+    "Age 9-10 (Intermediate)": "Pack my box with five dozen jugs.",
+    "Age 11-12 (Advanced)": "The quick brown fox jumps over the lazy dog."
 }
 
-# --- 2. Model Loading (Modified for TFLite Flex Support) ---
+# Average completion times and developmental goals
+AGE_REFS = {
+    5: {"time": 65, "goal": "Basic shape recognition and vertical/horizontal strokes."},
+    6: {"time": 55, "goal": "Letter sizing and basic baseline alignment."},
+    7: {"time": 48, "goal": "Word spacing and distinguishing 'b' from 'd'."},
+    8: {"time": 40, "goal": "Fluidity and connection between letter strokes."},
+    9: {"time": 32, "goal": "Automaticity; writing becomes faster and more consistent."},
+    10: {"time": 28, "goal": "Legibility maintained at efficient speeds."},
+    11: {"time": 24, "goal": "Mature motor control for efficient note-taking."},
+    12: {"time": 20, "goal": "Adult-level automaticity and personalized style."}
+}
+
+# --- 2. TFLite Model Loading (Flex Op Fix) ---
 @st.cache_resource
 def load_tflite_model():
     model_path = "Improved_Hybrid_AgeModel2.tflite"
     if not os.path.exists(model_path):
-        st.error(f"Model file '{model_path}' not found in repository.")
+        st.error(f"Model file '{model_path}' not found.")
         return None
     try:
-        # Standard Interpreter handles Flex Ops when tensorflow-cpu is installed
+        # Link the Flex Delegate by using the full TF library
         interpreter = tf.lite.Interpreter(model_path=model_path)
         interpreter.allocate_tensors()
         return interpreter
     except Exception as e:
-        st.error(f"Flex Delegate Error: {e}")
+        st.error(f"TFLite Error: {e}")
         return None
 
 interpreter = load_tflite_model()
 
-# --- 3. Prediction & Severity Logic ---
-
+# --- 3. Inference Logic ---
 def run_prediction(img_rgba, age_val):
-    """Step 1: Predict with the TFLite model."""
     if interpreter is None: return None
     
-    # Preprocess Image: RGBA -> RGB -> 160x160 -> Normalize
+    # Preprocess Image: The model expects specific normalization
     img_rgb = cv2.cvtColor(img_rgba.astype(np.uint8), cv2.COLOR_RGBA2RGB)
+    
+    # Invert if the model was trained on white-on-black (common in OCR)
+    # If the model predicts everyone as dyslexic, it might be seeing 'too much' ink.
     img_resized = cv2.resize(img_rgb, (160, 160))
     img_input = (img_resized / 255.0).astype(np.float32)
     img_input = np.expand_dims(img_input, axis=0)
     
-    # Preprocess Age Input
+    # Age Input
     age_input = np.array([[age_val]], dtype=np.float32)
 
     input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
-
-    # Dynamic Assignment for Hybrid Inputs
     for detail in input_details:
-        if len(detail['shape']) == 4:
+        if "input_1" in detail['name'] or len(detail['shape']) == 4:
             interpreter.set_tensor(detail['index'], img_input)
         else:
             interpreter.set_tensor(detail['index'], age_input)
     
     interpreter.invoke()
-    return interpreter.get_tensor(output_details[0]['index'])[0][0]
+    output = interpreter.get_tensor(interpreter.get_output_details()[0]['index'])[0][0]
+    return output
 
-def get_severity(prob):
-    """Step 2: Map probability to categorical severity."""
-    if prob < 0.25:
-        return "Normal", "No Risk", "green"
-    elif prob < 0.50:
-        return "Normal", "Low Risk", "blue"
+def get_diagnostic_report(prob, age, duration):
+    # Mapping probability to severity
+    # Note: If prob > 0.5, the model detects dyslexic traits. 
+    # Adjusting the threshold slightly can help if it is too sensitive.
+    if prob < 0.40:
+        status, sev, color = "Normal", "Low Risk", "green"
     elif prob < 0.75:
-        return "Dyslexic", "Moderate Risk", "orange"
+        status, sev, color = "At Risk", "Moderate Risk", "orange"
     else:
-        return "Dyslexic", "High Risk", "red"
-
-def generate_personalized_feedback(status, severity, age, duration):
-    """Step 3: Justify prediction with Age and Time parameters."""
+        status, sev, color = "At Risk", "High Risk", "red"
+    
     ref = AGE_REFS.get(age, AGE_REFS[12])
-    speed_status = "appropriate" if duration <= ref["time"] else "slower than typical"
+    speed_status = "Appropriate" if duration <= ref["time"] else "Delayed"
     
-    feedback = f"### Personalized Report (Age {age})\n"
-    feedback += f"**Benchmark Goal:** {ref['goal']}\n\n"
+    feedback = f"### Diagnostic Report (Age {age})\n"
+    feedback += f"**Developmental Target:** {ref['goal']}\n\n"
+    feedback += f"**Result Analysis:** The writing patterns show a **{sev}** profile. "
+    feedback += f"The completion time of **{duration}s** is considered **{speed_status}** for a {age}-year-old (Benchmark: {ref['time']}s).\n\n"
     
-    if status == "Normal":
-        feedback += f"The student shows healthy motor flow. The speed of **{duration}s** is {speed_status} (Target: ~{ref['time']}s). "
+    if status == "At Risk":
+        feedback += "The model identified tremors, inconsistent sizing, or directional reversals typical of dyslexia."
     else:
-        feedback += f"Analysis detected **{severity}** dyslexic markers. The speed of **{duration}s** is {speed_status} for this age. "
-        feedback += "Pattern inconsistencies suggest specific difficulty with spatial letter orientation."
-    
-    return feedback
+        feedback += "The stroke sequence and spatial orientation align with typical milestones."
+        
+    return status, sev, color, feedback
 
 # --- 4. User Interface ---
-st.title("✍️ Dyslexia Handwriting Board")
-st.markdown("Write the sentence using a stylus: **'witty mouse'**")
+st.title("🧠 Digital Handwriting Diagnostic Board")
+st.markdown("Assess handwriting patterns for ages 5–12.")
 
 with st.sidebar:
-    st.header("Student Profile")
-    student_age = st.slider("Select Age", 5, 12, 8)
-    pen_width = st.slider("Pen Thickness", 1, 15, 3)
+    st.header("Settings")
+    age = st.slider("Child's Age", 5, 12, 7)
+    group = "Age 5-6 (Early)" if age <= 6 else ("Age 7-8 (Basic)" if age <= 8 else "Age 9-10 (Intermediate)" if age <= 10 else "Age 11-12 (Advanced)")
+    st.write(f"**Recommended Sentence:**")
+    st.success(PRACTICE_SENTENCES[group])
+    
+    pen_size = st.slider("Pen Thickness", 1, 10, 3)
     st.divider()
-    st.info(f"Target for Age {student_age}: {AGE_REFS[student_age]['goal']}")
+    st.info(f"Goal for Age {age}: {AGE_REFS[age]['goal']}")
 
-col1, col2 = st.columns([2, 1])
+col_left, col_right = st.columns([2, 1])
 
-with col1:
-    st.subheader("Interactive Canvas")
+with col_left:
+    st.subheader("Writing Surface")
     canvas_result = st_canvas(
-        fill_color="rgba(255, 255, 255, 0)",
-        stroke_width=pen_width,
-        stroke_color="#000000",
-        background_color="#FFFFFF",
-        height=400,
-        width=600,
-        drawing_mode="freedraw",
-        key="canvas",
+        stroke_width=pen_size, stroke_color="#000", background_color="#FFF",
+        height=400, width=650, drawing_mode="freedraw", key="canvas"
     )
     
-    # Start timer when first stroke is drawn
     if canvas_result.json_data and len(canvas_result.json_data["objects"]) > 0:
-        if "start_time" not in st.session_state:
-            st.session_state.start_time = time.time()
+        if "start" not in st.session_state:
+            st.session_state.start = time.time()
 
-with col2:
-    st.subheader("Diagnostic Results")
-    if st.button("Submit for Analysis"):
-        if canvas_result.image_data is not None and "start_time" in st.session_state:
-            total_time = round(time.time() - st.session_state.start_time, 2)
+with col_right:
+    st.subheader("Real-time Analysis")
+    if st.button("Submit & Predict Risk"):
+        if canvas_result.image_data is not None and "start" in st.session_state:
+            duration = round(time.time() - st.session_state.start, 2)
             
-            # 1. PREDICT
-            prob = run_prediction(canvas_result.image_data, student_age)
-            
+            # Show a loading spinner
+            with st.spinner("Analyzing handwriting metrics..."):
+                prob = run_prediction(canvas_result.image_data, age)
+                
             if prob is not None:
-                # 2. SEVERITY
-                status, severity, color = get_severity(prob)
+                status, sev, color, report = get_diagnostic_report(prob, age, duration)
                 
-                st.markdown(f"### Status: :{color}[{status} - {severity}]")
-                st.metric("Writing Speed", f"{total_time}s")
-                st.metric("Risk Prob.", f"{round(float(prob)*100, 1)}%")
-                
-                # 3. FEEDBACK (Age/Time justified)
+                st.markdown(f"## Status: :{color}[{status}]")
+                st.metric("Risk Level", sev)
+                st.metric("Time Taken", f"{duration}s", delta=f"{AGE_REFS[age]['time']}s avg", delta_color="inverse")
                 st.divider()
-                st.markdown(generate_personalized_feedback(status, severity, student_age, total_time))
+                st.markdown(report)
                 
-                # Cleanup
-                del st.session_state.start_time
+                # Progress bar showing raw probability
+                st.write("Raw Dyslexic Pattern Confidence:")
+                st.progress(float(prob))
+                
+                del st.session_state.start
         else:
-            st.warning("Please draw on the canvas first.")
+            st.warning("Please begin writing on the board first.")
 
 if st.button("Clear Board"):
-    if "start_time" in st.session_state:
-        del st.session_state.start_time
+    if "start" in st.session_state: del st.session_state.start
     st.rerun()
